@@ -1,0 +1,89 @@
+---
+- name: Join Ubuntu server to domain
+  hosts: 192.168.93.166
+  vars_prompt:
+  - name: "admin_pass"
+    prompt: "Password for Administrateur"
+    unsafe: yes
+    private: yes
+  tasks:
+  - name: Install packages
+    apt:
+      name:
+      - libnss-sss
+      - libpam-sss
+      - realmd
+      - sssd
+      - sssd-tools
+      - oddjob
+      - oddjob-mkhomedir
+      - adcli
+      - samba-common-bin
+      - packagekit
+      - python3-pip
+      state: present
+
+  - name: Install pexpect with pip
+    pip:
+      name:
+      - pexpect>=4.6.0
+      executable: pip3
+
+  - name: Join system to AD
+    ansible.builtin.expect:
+      command: '/bin/bash -c "realm join -U Administrateur projet6.org"'
+      responses:
+        Password for *: "{{ admin_pass }}"
+
+  - name: Update the sssd file
+    template:
+      src: sssd-ubt.j2
+      dest: /etc/sssd/sssd.conf
+    notify: restart_sssd
+
+  - name: Allow user access
+    shell: |
+      realm permit -g linadmins
+      realm permit user-ansible
+      realm list
+    register: results
+
+  - name: Display the ouput
+    debug:
+      msg: "{{ results }}"
+
+  - name: Add Admin group and user-ansible to sudoers.d
+    copy:
+      src: user-ansible
+      dest: /etc/sudoers.d/
+
+  - name: Create user-ansible home dir
+    file:
+      path: /home/user-ansible
+      state: directory
+      mode: "0700"
+      owner: user-ansible
+      group: "utilisateurs du domaine"
+
+  - name: Copy the SSH key
+    authorized_key:
+      user: user-ansible
+      state: present
+      key: "{{ lookup('file', '/home/samy/.ssh/id_rsa.pub') }}"
+  - name: Update pam config
+    blockinfile:
+      path: /etc/pam.d/common-session
+      marker: "#<!-- {mark} ANSIBLE MANAGED BLOCK -->"
+      insertbefore: "# end of pam-auth-update config"
+      block: |
+        session optional    pam_winbind.so
+        session optional    pam_sss.so
+        session optional    pam_mkhomedir.so skel=/etc/skel/ umask=0077
+    notify: restart_system  
+  handlers:
+  - name: restart_sssd
+    service:
+      name: sssd
+      state: restarted
+  - name: restart_system
+    reboot:
